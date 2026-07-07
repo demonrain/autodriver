@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: file:/data/app.db
+      SESSION_SECRET: ${SESSION_SECRET:-change-this-session-secret}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-now}
+      WHATSLINK_BASE_URL: ${WHATSLINK_BASE_URL:-https://whatslink.info}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      PORT: 3000
+    volumes:
+      - app-data:/data
+    restart: unless-stopped
+
+volumes:
+  app-data:

@@ -1,0 +1,11 @@
+{
+  "name": "@magnet/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --platform node --target node22 --out-dir dist --external @node-rs/argon2 --external better-sqlite3",
+    "start": "node dist/index.js",
+    "db:migrate": "tsx src/db/migrate.ts"
+  }
+}

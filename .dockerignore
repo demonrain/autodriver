@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+apps/web/dist
+apps/server/dist
+data
+apps/server/data
+.git
+.env
+.env.local
+coverage
+*.db
+*.db-shm
+*.db-wal
