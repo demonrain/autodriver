@@ -14,6 +14,7 @@ import {
 import { startTransition, useDeferredValue, useEffect, useState } from "react";
 import type { MagnetMetadataDto, SafeUserDto } from "../../../packages/shared/src";
 import { ApiError, api } from "./api";
+import { resolveMagnetFromBrowser } from "./whatslinkClient";
 
 const sampleMagnet =
   "magnet:?xt=urn:btih:7c1da06ef6898eaf9cabf879e44450417f5ae63f&dn=ROYD-327-C";
@@ -26,7 +27,9 @@ export default function App() {
   const [magnet, setMagnet] = useState("");
   const deferredMagnet = useDeferredValue(magnet);
   const [result, setResult] = useState<MagnetMetadataDto | null>(null);
-  const [source, setSource] = useState<"cache" | "upstream" | null>(null);
+  const [source, setSource] = useState<"cache" | "upstream" | "client" | null>(
+    null
+  );
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -39,18 +42,49 @@ export default function App() {
   async function resolveMagnet() {
     setBusy(true);
     setStatus("");
+    const targetMagnet = deferredMagnet || sampleMagnet;
+
+    async function applyClientFallback(): Promise<boolean> {
+      try {
+        const data = await resolveMagnetFromBrowser(targetMagnet);
+        startTransition(() => {
+          setResult(data);
+          setSource("client");
+          setStatus(
+            data.status === "unknown"
+              ? "未查询到可展示的元数据"
+              : "查询完成（浏览器直连 WhatsLink）"
+          );
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     try {
-      const response = await api.resolveMagnet(deferredMagnet || sampleMagnet);
+      const response = await api.resolveMagnet(targetMagnet);
+      if (response.data.status === "error") {
+        if (await applyClientFallback()) return;
+      }
       startTransition(() => {
         setResult(response.data);
         setSource(response.source);
         setStatus(
           response.data.status === "unknown"
             ? "未查询到可展示的元数据"
-            : "查询完成"
+            : response.data.status === "error"
+              ? "上游查询暂时不可用"
+              : "查询完成"
         );
       });
     } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.message === "WHATSLINK_UNAVAILABLE"
+      ) {
+        if (await applyClientFallback()) return;
+      }
       setStatus(errorMessage(error));
     } finally {
       setBusy(false);
@@ -129,7 +163,7 @@ function SearchView(props: {
   setMagnet: (value: string) => void;
   busy: boolean;
   status: string;
-  source: "cache" | "upstream" | null;
+  source: "cache" | "upstream" | "client" | null;
   result: MagnetMetadataDto | null;
   user: SafeUserDto | null;
   onResolve: () => void;
@@ -184,7 +218,7 @@ function SearchView(props: {
 
 function ResultPanel(props: {
   result: MagnetMetadataDto;
-  source: "cache" | "upstream" | null;
+  source: "cache" | "upstream" | "client" | null;
   user: SafeUserDto | null;
   onResultChange: (value: MagnetMetadataDto | null) => void;
 }) {
@@ -229,7 +263,16 @@ function ResultPanel(props: {
         <Metric label="大小" value={formatBytes(result.size)} />
         <Metric label="文件数" value={String(result.count)} />
         <Metric label="类型" value={result.fileType || result.type || "-"} />
-        <Metric label="来源" value={props.source === "cache" ? "缓存" : "上游"} />
+        <Metric
+          label="来源"
+          value={
+            props.source === "cache"
+              ? "缓存"
+              : props.source === "client"
+                ? "浏览器直连"
+                : "上游"
+          }
+        />
       </div>
       {result.screenshots.length > 0 ? (
         <div className="screenshots">
