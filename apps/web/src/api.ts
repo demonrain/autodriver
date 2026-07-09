@@ -1,4 +1,8 @@
-import type { MagnetMetadataDto, SafeUserDto } from "../../../packages/shared/src";
+import type {
+  LeaderboardItemDto,
+  MagnetMetadataDto,
+  SafeUserDto
+} from "../../../packages/shared/src";
 
 type ApiOptions = {
   method?: string;
@@ -19,9 +23,30 @@ async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
         : { "content-type": "application/json" },
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
-  const data = await response.json().catch(() => ({}));
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const isJson = contentType.includes("application/json");
+  const data = isJson
+    ? await response.json().catch(() => ({} as Record<string, unknown>))
+    : ({} as Record<string, unknown>);
+
+  // SPA fallback can return HTML 200 for unknown /api routes on old servers.
+  if (!isJson) {
+    throw new ApiError(
+      response.ok ? "API_UNAVAILABLE" : "REQUEST_FAILED",
+      response.ok ? 502 : response.status,
+      data
+    );
+  }
+
   if (!response.ok) {
-    throw new ApiError(data.error ?? "REQUEST_FAILED", response.status, data);
+    throw new ApiError(
+      typeof data === "object" && data && "error" in data
+        ? String((data as { error?: unknown }).error ?? "REQUEST_FAILED")
+        : "REQUEST_FAILED",
+      response.status,
+      data
+    );
   }
   return data as T;
 }
@@ -53,6 +78,15 @@ export const api = {
     apiFetch<{ source: "cache" | "upstream"; data: MagnetMetadataDto }>(
       "/api/magnets/resolve",
       { method: "POST", body: { magnet } }
+    ),
+  submitFeedback: (hash: string, vote: "up" | "down") =>
+    apiFetch<{ data: MagnetMetadataDto }>(`/api/magnets/${hash}/feedback`, {
+      method: "POST",
+      body: { vote }
+    }),
+  leaderboard: (limit = 20) =>
+    apiFetch<{ items: LeaderboardItemDto[]; linksVisible: boolean }>(
+      `/api/leaderboard?limit=${limit}`
     ),
   history: () =>
     apiFetch<{

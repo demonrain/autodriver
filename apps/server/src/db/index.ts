@@ -91,6 +91,20 @@ export function ensureSchema(sqlite: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_favorites_user_created
       ON favorites(user_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS magnet_votes (
+      info_hash TEXT NOT NULL REFERENCES magnet_metadata(info_hash) ON DELETE CASCADE,
+      actor_key TEXT NOT NULL,
+      vote INTEGER NOT NULL CHECK (vote IN (-1, 1)),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (info_hash, actor_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_magnet_votes_info_hash
+      ON magnet_votes(info_hash);
+    CREATE INDEX IF NOT EXISTS idx_magnet_votes_score
+      ON magnet_votes(vote);
+
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,

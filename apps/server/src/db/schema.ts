@@ -66,6 +66,22 @@ export const favorites = sqliteTable(
   })
 );
 
+export const magnetVotes = sqliteTable(
+  "magnet_votes",
+  {
+    infoHash: text("info_hash")
+      .notNull()
+      .references(() => magnetMetadata.infoHash, { onDelete: "cascade" }),
+    actorKey: text("actor_key").notNull(),
+    vote: integer("vote").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.infoHash, table.actorKey] })
+  })
+);
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -74,3 +90,4 @@ export const settings = sqliteTable("settings", {
 
 export type UserRecord = typeof users.$inferSelect;
 export type MagnetMetadataRecord = typeof magnetMetadata.$inferSelect;
+export type MagnetVoteRecord = typeof magnetVotes.$inferSelect;

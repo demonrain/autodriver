@@ -2,6 +2,7 @@ import {
   Activity,
   Bookmark,
   Clock3,
+  Copy,
   Database,
   Gauge,
   Heart,
@@ -9,10 +10,17 @@ import {
   LogOut,
   Search,
   Shield,
+  ThumbsDown,
+  ThumbsUp,
+  Trophy,
   UserRound
 } from "lucide-react";
 import { startTransition, useDeferredValue, useEffect, useState } from "react";
-import type { MagnetMetadataDto, SafeUserDto } from "../../../packages/shared/src";
+import type {
+  LeaderboardItemDto,
+  MagnetMetadataDto,
+  SafeUserDto
+} from "../../../packages/shared/src";
 import { ApiError, api } from "./api";
 import { resolveMagnetFromBrowser } from "./whatslinkClient";
 
@@ -32,6 +40,7 @@ export default function App() {
   );
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [leaderboardTick, setLeaderboardTick] = useState(0);
 
   useEffect(() => {
     api.session().then((session) => setUser(session.user)).catch(() => {
@@ -101,13 +110,13 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <button className="brand" onClick={() => setView("search")}>
-          <span className="brand-mark">M</span>
-          <span>磁力元数据查询平台</span>
+          <span className="brand-mark">窝</span>
+          <span>窝要验牌</span>
         </button>
         <nav className="nav">
           <button className={view === "search" ? "active" : ""} onClick={() => setView("search")}>
             <Search size={16} />
-            查询
+            验牌
           </button>
           <button className={view === "library" ? "active" : ""} onClick={() => setView("library")}>
             <Bookmark size={16} />
@@ -147,8 +156,10 @@ export default function App() {
             source={source}
             result={result}
             user={user}
+            leaderboardTick={leaderboardTick}
             onResolve={resolveMagnet}
             onResultChange={setResult}
+            onScoreChanged={() => setLeaderboardTick((value) => value + 1)}
           />
         ) : null}
         {view === "library" ? <LibraryView user={user} /> : null}
@@ -166,15 +177,17 @@ function SearchView(props: {
   source: "cache" | "upstream" | "client" | null;
   result: MagnetMetadataDto | null;
   user: SafeUserDto | null;
+  leaderboardTick: number;
   onResolve: () => void;
   onResultChange: (value: MagnetMetadataDto | null) => void;
+  onScoreChanged: () => void;
 }) {
   return (
     <section className="search-grid">
       <div className="query-panel">
         <div className="section-title">
-          <h1>提交磁力链接，查看文件元数据</h1>
-          <p>游客可直接查询；登录后会自动保存历史并支持收藏。</p>
+          <h1>先偷看一眼，再决定要不要下</h1>
+          <p>贴上磁力链接验一验牌面；游客可直接查询，登录后可保存历史与收藏。</p>
         </div>
         <textarea
           value={props.magnet}
@@ -184,7 +197,7 @@ function SearchView(props: {
         <div className="actions-row">
           <button className="primary-button" disabled={props.busy} onClick={props.onResolve}>
             <Search size={18} />
-            {props.busy ? "查询中" : "查询磁力"}
+            {props.busy ? "验牌中" : "开始验牌"}
           </button>
           <button className="secondary-button" onClick={() => props.setMagnet(sampleMagnet)}>
             填入示例
@@ -197,6 +210,7 @@ function SearchView(props: {
             source={props.source}
             user={props.user}
             onResultChange={props.onResultChange}
+            onScoreChanged={props.onScoreChanged}
           />
         ) : (
           <EmptyResult />
@@ -204,12 +218,13 @@ function SearchView(props: {
       </div>
 
       <aside className="summary-rail">
+        <LeaderboardPanel refreshKey={props.leaderboardTick} user={props.user} />
         <Metric icon={<Gauge size={18} />} label="游客额度" value="30 / 小时" />
         <Metric icon={<Clock3 size={18} />} label="成功缓存" value="7 天" />
         <Metric icon={<Database size={18} />} label="存储策略" value="仅保存 Hash" />
         <div className="rail-note">
           <strong>隐私默认值</strong>
-          <span>系统不会保存完整磁力链接，只记录规范化后的 BTIH 与查询结果。</span>
+          <span>系统只缓存 Hash 与元数据；完整磁力链接仅对登录用户在排行榜中展示。</span>
         </div>
       </aside>
     </section>
@@ -221,9 +236,12 @@ function ResultPanel(props: {
   source: "cache" | "upstream" | "client" | null;
   user: SafeUserDto | null;
   onResultChange: (value: MagnetMetadataDto | null) => void;
+  onScoreChanged: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [voting, setVoting] = useState(false);
+  const [feedbackStatus, setFeedbackStatus] = useState("");
   const result = props.result;
 
   async function toggleFavorite() {
@@ -238,6 +256,27 @@ function ResultPanel(props: {
       props.onResultChange({ ...result, isFavorite: !result.isFavorite });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function submitFeedback(vote: "up" | "down") {
+    setVoting(true);
+    setFeedbackStatus("");
+    try {
+      const response = await api.submitFeedback(result.infoHash, vote);
+      props.onResultChange(response.data);
+      props.onScoreChanged();
+      if (response.data.myVote === 1) {
+        setFeedbackStatus("已记正反馈：牌没有问题");
+      } else if (response.data.myVote === -1) {
+        setFeedbackStatus("已记负反馈：给我擦皮鞋");
+      } else {
+        setFeedbackStatus("已取消本次反馈");
+      }
+    } catch (error) {
+      setFeedbackStatus(errorMessage(error));
+    } finally {
+      setVoting(false);
     }
   }
 
@@ -274,6 +313,42 @@ function ResultPanel(props: {
           }
         />
       </div>
+      <div className="score-strip">
+        <div className="score-badge">
+          <Trophy size={16} />
+          <span>当前得分</span>
+          <strong
+            className={
+              (result.score ?? 0) > 0
+                ? "positive"
+                : (result.score ?? 0) < 0
+                  ? "negative"
+                  : ""
+            }
+          >
+            {formatScore(result.score)}
+          </strong>
+        </div>
+        <div className="feedback-actions">
+          <button
+            className={`feedback-button up ${result.myVote === 1 ? "active" : ""}`}
+            disabled={voting}
+            onClick={() => submitFeedback("up")}
+          >
+            <ThumbsUp size={16} />
+            牌没有问题
+          </button>
+          <button
+            className={`feedback-button down ${result.myVote === -1 ? "active" : ""}`}
+            disabled={voting}
+            onClick={() => submitFeedback("down")}
+          >
+            <ThumbsDown size={16} />
+            给我擦皮鞋
+          </button>
+        </div>
+        {feedbackStatus ? <span className="inline-status">{feedbackStatus}</span> : null}
+      </div>
       {result.screenshots.length > 0 ? (
         <div className="screenshots">
           <div className="screenshots-head">
@@ -298,6 +373,122 @@ function ResultPanel(props: {
         <div className="no-preview">没有可展示的截图预览，或管理员已关闭预览。</div>
       )}
     </article>
+  );
+}
+
+function LeaderboardPanel(props: {
+  refreshKey: number;
+  user: SafeUserDto | null;
+}) {
+  const [items, setItems] = useState<LeaderboardItemDto[]>([]);
+  const [linksVisible, setLinksVisible] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .leaderboard(15)
+      .then((response) => {
+        if (!cancelled) {
+          setItems(Array.isArray(response.items) ? response.items : []);
+          setLinksVisible(Boolean(response.linksVisible));
+          setError("");
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setItems([]);
+          setLinksVisible(false);
+          setError(errorMessage(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.refreshKey, props.user?.id]);
+
+  const list = Array.isArray(items) ? items : [];
+  const canSeeLinks = Boolean(props.user) && linksVisible;
+
+  async function copyMagnet(item: LeaderboardItemDto) {
+    if (!item.magnetLink) return;
+    try {
+      await navigator.clipboard.writeText(item.magnetLink);
+      setCopiedHash(item.infoHash);
+      window.setTimeout(() => {
+        setCopiedHash((current) => (current === item.infoHash ? null : current));
+      }, 1600);
+    } catch {
+      setError("复制失败，请手动选择链接");
+    }
+  }
+
+  return (
+    <div className="leaderboard-panel">
+      <div className="leaderboard-head">
+        <Trophy size={18} />
+        <div>
+          <strong>验牌排行榜</strong>
+          <span>按社区反馈分数排序</span>
+        </div>
+      </div>
+      <div className={`leaderboard-hint ${canSeeLinks ? "unlocked" : "locked"}`}>
+        {canSeeLinks
+          ? "已登录：可查看并复制完整磁力链接"
+          : "游客仅看名称与分数；登录后可查看完整磁力链接"}
+      </div>
+      {loading ? <p className="empty-text">加载排行榜…</p> : null}
+      {!loading && error ? <p className="inline-status">{error}</p> : null}
+      {!loading && !error && list.length === 0 ? (
+        <p className="empty-text">还没有评分，验完牌来第一票吧</p>
+      ) : null}
+      {!loading && list.length > 0 ? (
+        <ol className="leaderboard-list">
+          {list.map((item, index) => (
+            <li key={`${item.infoHash}-${index}`}>
+              <span className={`rank-badge rank-${Math.min(index + 1, 3)}`}>{index + 1}</span>
+              <div className="leaderboard-item">
+                <strong title={item.name || item.infoHash}>
+                  {item.name || shortHash(item.infoHash)}
+                </strong>
+                <span>
+                  {formatBytes(item.size)} · {item.voteCount} 票
+                </span>
+                {canSeeLinks && item.magnetLink ? (
+                  <div className="leaderboard-link-row">
+                    <code className="leaderboard-link" title={item.magnetLink}>
+                      {item.magnetLink}
+                    </code>
+                    <button
+                      className="link-button copy-link-button"
+                      type="button"
+                      onClick={() => copyMagnet(item)}
+                      title="复制完整磁力链接"
+                    >
+                      <Copy size={14} />
+                      {copiedHash === item.infoHash ? "已复制" : "复制"}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              <span
+                className={`leaderboard-score ${
+                  item.score > 0 ? "positive" : item.score < 0 ? "negative" : ""
+                }`}
+              >
+                {formatScore(item.score)}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
   );
 }
 
@@ -376,7 +567,7 @@ function LibraryView({ user }: { user: SafeUserDto | null }) {
         items={history.map((item) => ({
           id: `${item.queriedAt}-${item.data.infoHash}`,
           title: item.data.name || item.data.infoHash,
-          meta: `${formatDate(item.queriedAt)} · ${item.source}`,
+          meta: `${formatDate(item.queriedAt)} · ${item.source} · ${formatScore(item.data.score)} 分`,
           status: item.data.status
         }))}
       />
@@ -387,7 +578,7 @@ function LibraryView({ user }: { user: SafeUserDto | null }) {
         items={favorites.map((item) => ({
           id: `${item.favoritedAt}-${item.data.infoHash}`,
           title: item.data.name || item.data.infoHash,
-          meta: `${formatDate(item.favoritedAt)} · ${formatBytes(item.data.size)}`,
+          meta: `${formatDate(item.favoritedAt)} · ${formatBytes(item.data.size)} · ${formatScore(item.data.score)} 分`,
           status: item.data.status
         }))}
       />
@@ -510,8 +701,8 @@ function EmptyResult() {
   return (
     <div className="empty-result">
       <Search size={30} />
-      <span>等待查询</span>
-      <p>提交磁力链接后会显示文件名、大小、文件数量和截图预览。</p>
+      <span>等待验牌</span>
+      <p>贴上磁力链接后，先偷看文件名、大小、文件数和截图，再决定要不要下。</p>
     </div>
   );
 }
@@ -556,6 +747,17 @@ function formatDate(value: number): string {
   }).format(new Date(value));
 }
 
+function formatScore(value: number | null | undefined): string {
+  const score = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  if (score > 0) return `+${score}`;
+  return String(score);
+}
+
+function shortHash(hash: string): string {
+  if (hash.length <= 12) return hash;
+  return `${hash.slice(0, 6)}…${hash.slice(-4)}`;
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.message === "UNAUTHENTICATED") return "请先登录";
@@ -563,6 +765,8 @@ function errorMessage(error: unknown): string {
     if (error.message === "MAGNET_INVALID") return "磁力链接格式不正确";
     if (error.message === "RATE_LIMITED") return "查询过于频繁，请稍后再试";
     if (error.message === "WHATSLINK_UNAVAILABLE") return "上游查询暂时不可用";
+    if (error.message === "MAGNET_NOT_FOUND") return "还没有这条资源的记录";
+    if (error.message === "API_UNAVAILABLE") return "后端接口未就绪，请重启服务";
     return error.message;
   }
   return "请求失败";

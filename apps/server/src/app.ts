@@ -7,11 +7,14 @@ import { and, desc, eq, gt } from "drizzle-orm";
 import {
   adminSettingsPatchSchema,
   authRequestSchema,
+  magnetFeedbackRequestSchema,
   magnetResolveRequestSchema,
   normalizeInfoHash,
   parseMagnetLink,
+  type LeaderboardItemDto,
   type MagnetMetadataDto,
   type MagnetStatus,
+  type MagnetVoteValue,
   type SafeUserDto,
   type ScreenshotPreview
 } from "../../../packages/shared/src";
@@ -27,6 +30,7 @@ import type { AppDatabase } from "./db";
 import {
   favorites,
   magnetMetadata,
+  magnetVotes,
   queryEvents,
   sessions,
   users,
@@ -213,7 +217,13 @@ export function createApp(options: AppOptions) {
       });
       return c.json({
         source: "cache",
-        data: metadataToDto(db, cached, screenshotsEnabled, c.var.user?.id)
+        data: metadataToDto(
+          db,
+          cached,
+          screenshotsEnabled,
+          c.var.user?.id,
+          rateLimit.actorKey
+        )
       });
     }
 
@@ -231,7 +241,13 @@ export function createApp(options: AppOptions) {
       });
       return c.json({
         source: "upstream",
-        data: metadataToDto(db, saved, screenshotsEnabled, c.var.user?.id)
+        data: metadataToDto(
+          db,
+          saved,
+          screenshotsEnabled,
+          c.var.user?.id,
+          rateLimit.actorKey
+        )
       });
     } catch (error) {
       const saved = upsertMetadata(
@@ -259,11 +275,74 @@ export function createApp(options: AppOptions) {
       return c.json(
         {
           error: "WHATSLINK_UNAVAILABLE",
-          data: metadataToDto(db, saved, screenshotsEnabled, c.var.user?.id)
+          data: metadataToDto(
+            db,
+            saved,
+            screenshotsEnabled,
+            c.var.user?.id,
+            rateLimit.actorKey
+          )
         },
         502
       );
     }
+  });
+
+  // Independent path so it never collides with /api/magnets/:hash.
+  app.get("/api/leaderboard", (c) => {
+    const limitRaw = Number(c.req.query("limit") ?? "20");
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(Math.trunc(limitRaw), 1), 50)
+      : 20;
+    const revealLinks = Boolean(c.var.user);
+
+    const rows = sqlite
+      .prepare(
+        `
+        SELECT
+          mm.info_hash as infoHash,
+          mm.name as name,
+          mm.status as status,
+          mm.size as size,
+          mm.count as count,
+          COALESCE(SUM(mv.vote), 0) as score,
+          COUNT(mv.actor_key) as voteCount
+        FROM magnet_metadata mm
+        LEFT JOIN magnet_votes mv ON mv.info_hash = mm.info_hash
+        GROUP BY mm.info_hash
+        HAVING COUNT(mv.actor_key) > 0
+        ORDER BY score DESC, voteCount DESC, mm.updated_at DESC
+        LIMIT ?
+      `
+      )
+      .all(limit) as Array<{
+      infoHash: string;
+      name: string;
+      status: MagnetStatus;
+      size: number;
+      count: number;
+      score: number;
+      voteCount: number;
+    }>;
+
+    const items: LeaderboardItemDto[] = rows.map((row) => {
+      const item: LeaderboardItemDto = {
+        // Guests only see a shortened hash so the full magnet cannot be rebuilt.
+        infoHash: revealLinks ? row.infoHash : maskInfoHash(row.infoHash),
+        name: row.name,
+        status: row.status,
+        size: row.size,
+        count: row.count,
+        score: Number(row.score) || 0,
+        voteCount: Number(row.voteCount) || 0
+      };
+      if (revealLinks) {
+        item.magnetLink = buildMagnetLink(row.infoHash, row.name);
+      }
+      return item;
+    });
+
+    return c.json({ items, linksVisible: revealLinks });
   });
 
   app.get("/api/magnets/:hash", (c) => {
@@ -284,12 +363,98 @@ export function createApp(options: AppOptions) {
       return c.json({ error: "MAGNET_NOT_FOUND" }, 404);
     }
 
+    const actorKey = actorKeyForRequest(
+      c.req.header("x-forwarded-for"),
+      c.var.user
+    );
+
     return c.json({
       data: metadataToDto(
         db,
         cached,
         getBooleanSetting(db, SETTING_KEYS.screenshotsEnabled, true),
-        c.var.user?.id
+        c.var.user?.id,
+        actorKey
+      )
+    });
+  });
+
+  app.post("/api/magnets/:hash/feedback", async (c) => {
+    let infoHash: string;
+    try {
+      infoHash = normalizeInfoHash(c.req.param("hash"));
+    } catch {
+      return c.json({ error: "HASH_INVALID" }, 400);
+    }
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = magnetFeedbackRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "REQUEST_INVALID" }, 400);
+    }
+
+    const metadata = db
+      .select()
+      .from(magnetMetadata)
+      .where(eq(magnetMetadata.infoHash, infoHash))
+      .get();
+    if (!metadata) {
+      return c.json({ error: "MAGNET_NOT_FOUND" }, 404);
+    }
+
+    const actorKey = actorKeyForRequest(
+      c.req.header("x-forwarded-for"),
+      c.var.user
+    );
+    const nextVote: MagnetVoteValue = parsed.data.vote === "up" ? 1 : -1;
+    const now = Date.now();
+    const existing = db
+      .select()
+      .from(magnetVotes)
+      .where(
+        and(
+          eq(magnetVotes.infoHash, infoHash),
+          eq(magnetVotes.actorKey, actorKey)
+        )
+      )
+      .get();
+
+    // Clicking the same reaction again cancels the vote.
+    if (existing && existing.vote === nextVote) {
+      db.delete(magnetVotes)
+        .where(
+          and(
+            eq(magnetVotes.infoHash, infoHash),
+            eq(magnetVotes.actorKey, actorKey)
+          )
+        )
+        .run();
+    } else {
+      db.insert(magnetVotes)
+        .values({
+          infoHash,
+          actorKey,
+          vote: nextVote,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now
+        })
+        .onConflictDoUpdate({
+          target: [magnetVotes.infoHash, magnetVotes.actorKey],
+          set: {
+            vote: nextVote,
+            updatedAt: now
+          }
+        })
+        .run();
+    }
+
+    return c.json({
+      data: metadataToDto(
+        db,
+        metadata,
+        getBooleanSetting(db, SETTING_KEYS.screenshotsEnabled, true),
+        c.var.user?.id,
+        actorKey
       )
     });
   });
@@ -395,7 +560,8 @@ export function createApp(options: AppOptions) {
             db,
             row,
             getBooleanSetting(db, SETTING_KEYS.screenshotsEnabled, true),
-            user.id
+            user.id,
+            `user:${user.id}`
           )
         }))
     });
@@ -435,7 +601,8 @@ export function createApp(options: AppOptions) {
           db,
           row,
           getBooleanSetting(db, SETTING_KEYS.screenshotsEnabled, true),
-          user.id
+          user.id,
+          `user:${user.id}`
         )
       }))
     });
@@ -561,6 +728,10 @@ export function createApp(options: AppOptions) {
   app.get("/api/admin/health", async (c) => {
     return c.json({ whatslink: await whatslink.healthcheck() });
   });
+
+  // Never serve the SPA shell for unknown API routes — that breaks clients
+  // that treat HTML 200 responses as successful JSON.
+  app.all("/api/*", (c) => c.json({ error: "NOT_FOUND" }, 404));
 
   if (config.staticRoot) {
     app.use("/assets/*", serveStatic({ root: config.staticRoot }));
@@ -703,7 +874,8 @@ function metadataToDto(
   db: AppDatabase,
   row: MagnetMetadataRecord,
   screenshotsEnabled: boolean,
-  userId?: string
+  userId?: string,
+  actorKey?: string
 ): MagnetMetadataDto {
   const screenshots = screenshotsEnabled
     ? parseScreenshots(row.screenshotsJson).map((item) => ({
@@ -719,6 +891,17 @@ function metadataToDto(
         .get()
     : null;
 
+  let score = 0;
+  let myVote: MagnetVoteValue | null = null;
+  try {
+    score = getMagnetScore(db, row.infoHash);
+    myVote = actorKey ? getMyVote(db, row.infoHash, actorKey) : null;
+  } catch {
+    // Voting table may be missing on very old DBs before migrate; keep query usable.
+    score = 0;
+    myVote = null;
+  }
+
   return {
     infoHash: row.infoHash,
     status: row.status,
@@ -730,8 +913,49 @@ function metadataToDto(
     screenshots,
     fetchedAt: row.fetchedAt,
     expiresAt: row.expiresAt,
-    isFavorite: Boolean(favorite)
+    isFavorite: Boolean(favorite),
+    score: Number.isFinite(score) ? score : 0,
+    myVote
   };
+}
+
+function getMagnetScore(db: AppDatabase, infoHash: string): number {
+  const rows = db
+    .select({ vote: magnetVotes.vote })
+    .from(magnetVotes)
+    .where(eq(magnetVotes.infoHash, infoHash))
+    .all();
+  return rows.reduce((sum, row) => sum + (Number(row.vote) || 0), 0);
+}
+
+function buildMagnetLink(infoHash: string, name?: string): string {
+  let link = `magnet:?xt=urn:btih:${infoHash}`;
+  const displayName = name?.trim();
+  if (displayName) {
+    link += `&dn=${encodeURIComponent(displayName)}`;
+  }
+  return link;
+}
+
+function maskInfoHash(infoHash: string): string {
+  if (infoHash.length <= 12) return infoHash;
+  return `${infoHash.slice(0, 6)}…${infoHash.slice(-4)}`;
+}
+
+function getMyVote(
+  db: AppDatabase,
+  infoHash: string,
+  actorKey: string
+): MagnetVoteValue | null {
+  const row = db
+    .select()
+    .from(magnetVotes)
+    .where(
+      and(eq(magnetVotes.infoHash, infoHash), eq(magnetVotes.actorKey, actorKey))
+    )
+    .get();
+  if (!row) return null;
+  return row.vote === 1 || row.vote === -1 ? (row.vote as MagnetVoteValue) : null;
 }
 
 function parseScreenshots(value: string): ScreenshotPreview[] {
