@@ -88,6 +88,14 @@ export const settings = sqliteTable("settings", {
   updatedAt: integer("updated_at").notNull()
 });
 
+export const suggestions = sqliteTable("suggestions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+  actorKey: text("actor_key").notNull(),
+  content: text("content").notNull(),
+  createdAt: integer("created_at").notNull()
+});
+
 export type UserRecord = typeof users.$inferSelect;
 export type MagnetMetadataRecord = typeof magnetMetadata.$inferSelect;
 export type MagnetVoteRecord = typeof magnetVotes.$inferSelect;

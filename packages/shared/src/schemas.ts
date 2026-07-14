@@ -1,11 +1,15 @@
 import { z } from "zod";
 
 export const magnetResolveRequestSchema = z.object({
-  magnet: z.string().min(12).max(4096)
+  magnet: z.string().min(32).max(4096)
 });
 
 export const magnetFeedbackRequestSchema = z.object({
   vote: z.enum(["up", "down"])
+});
+
+export const suggestionCreateSchema = z.object({
+  content: z.string().trim().min(2).max(2000)
 });
 
 export const authRequestSchema = z.object({
@@ -59,5 +63,13 @@ export type SafeUserDto = {
   id: string;
   email: string;
   role: "user" | "admin";
+  createdAt: number;
+};
+
+export type SuggestionDto = {
+  id: string;
+  content: string;
+  email: string | null;
+  actorKey: string;
   createdAt: number;
 };

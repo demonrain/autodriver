@@ -187,8 +187,8 @@ button:disabled {
 .section-title h1 {
   max-width: 760px;
   margin: 0;
-  font-size: clamp(31px, 4vw, 54px);
-  line-height: 1.02;
+  font-size: clamp(22px, 2.6vw, 32px);
+  line-height: 1.2;
   letter-spacing: 0;
 }
 
@@ -326,7 +326,8 @@ input:focus {
 
 .result-head h2 {
   margin: 8px 0 6px;
-  font-size: 27px;
+  font-size: 18px;
+  line-height: 1.35;
 }
 
 .result-head p {
@@ -413,6 +414,48 @@ input:focus {
   border-radius: 8px;
   background: var(--surface-2);
   color: var(--muted);
+}
+
+.suggestion-box {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(242, 234, 220, 0.45);
+}
+
+.suggestion-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: var(--teal-dark);
+}
+
+.suggestion-head div {
+  display: grid;
+  gap: 2px;
+}
+
+.suggestion-head strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.suggestion-head span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.suggestion-box textarea {
+  min-height: 88px;
+  margin-bottom: 10px;
+}
+
+.status-dot.suggestion {
+  background: rgba(13, 124, 115, 0.11);
+  color: var(--teal-dark);
 }
 
 .score-strip {
@@ -686,9 +729,12 @@ input:focus {
 
 .data-row strong {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.data-row .leaderboard-link-row {
+  margin-top: 6px;
 }
 
 .data-row span {
@@ -758,7 +804,7 @@ input:focus {
   }
 
   .section-title h1 {
-    font-size: 34px;
+    font-size: 24px;
   }
 
   .metadata-strip,

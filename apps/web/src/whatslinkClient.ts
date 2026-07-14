@@ -1,4 +1,4 @@
-import { parseMagnetLink } from "../../../packages/shared/src";
+import { buildMagnetLink, parseMagnetLink } from "../../../packages/shared/src";
 import type { MagnetMetadataDto, MagnetStatus, ScreenshotPreview } from "../../../packages/shared/src";
 
 const WHATSLINK_BASE_URL = "https://whatslink.info";
@@ -75,8 +75,9 @@ export async function resolveMagnetFromBrowser(
   magnet: string
 ): Promise<MagnetMetadataDto> {
   const parsed = parseMagnetLink(magnet);
+  const magnetUri = buildMagnetLink(parsed.infoHash, parsed.displayName);
   const endpoint = new URL("/api/v1/link", WHATSLINK_BASE_URL);
-  endpoint.searchParams.set("url", magnet);
+  endpoint.searchParams.set("url", magnetUri);
 
   const response = await fetch(endpoint, {
     headers: {

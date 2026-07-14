@@ -7,16 +7,19 @@ import { and, desc, eq, gt } from "drizzle-orm";
 import {
   adminSettingsPatchSchema,
   authRequestSchema,
+  buildMagnetLink,
   magnetFeedbackRequestSchema,
   magnetResolveRequestSchema,
   normalizeInfoHash,
   parseMagnetLink,
+  suggestionCreateSchema,
   type LeaderboardItemDto,
   type MagnetMetadataDto,
   type MagnetStatus,
   type MagnetVoteValue,
   type SafeUserDto,
-  type ScreenshotPreview
+  type ScreenshotPreview,
+  type SuggestionDto
 } from "../../../packages/shared/src";
 import {
   constantTimeEqual,
@@ -33,6 +36,7 @@ import {
   magnetVotes,
   queryEvents,
   sessions,
+  suggestions,
   users,
   type MagnetMetadataRecord,
   type UserRecord
@@ -179,6 +183,11 @@ export function createApp(options: AppOptions) {
       return c.json({ error: "MAGNET_INVALID" }, 400);
     }
 
+    const magnetUri = buildMagnetLink(
+      parsedMagnet.infoHash,
+      parsedMagnet.displayName
+    );
+
     const rateLimit = checkRateLimit({
       db,
       buckets: rateBuckets,
@@ -217,6 +226,7 @@ export function createApp(options: AppOptions) {
       });
       return c.json({
         source: "cache",
+        screenshotsEnabled,
         data: metadataToDto(
           db,
           cached,
@@ -228,7 +238,7 @@ export function createApp(options: AppOptions) {
     }
 
     try {
-      const upstream = await whatslink.resolve(parsedBody.data.magnet);
+      const upstream = await whatslink.resolve(magnetUri);
       const saved = upsertMetadata(db, parsedMagnet.infoHash, upstream, {
         fallbackName: parsedMagnet.displayName
       });
@@ -241,6 +251,7 @@ export function createApp(options: AppOptions) {
       });
       return c.json({
         source: "upstream",
+        screenshotsEnabled,
         data: metadataToDto(
           db,
           saved,
@@ -275,6 +286,7 @@ export function createApp(options: AppOptions) {
       return c.json(
         {
           error: "WHATSLINK_UNAVAILABLE",
+          screenshotsEnabled,
           data: metadataToDto(
             db,
             saved,
@@ -556,6 +568,7 @@ export function createApp(options: AppOptions) {
         .map((row) => ({
           queriedAt: row.queriedAt,
           source: row.source,
+          magnetLink: buildMagnetLink(row.infoHash, row.name),
           data: metadataToDto(
             db,
             row,
@@ -650,6 +663,43 @@ export function createApp(options: AppOptions) {
     return c.json({ ok: true });
   });
 
+  app.post("/api/suggestions", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = suggestionCreateSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "REQUEST_INVALID" }, 400);
+    }
+
+    const actorKey = actorKeyForRequest(
+      c.req.header("x-forwarded-for"),
+      c.var.user
+    );
+    const id = createId("sug");
+    const createdAt = Date.now();
+    db.insert(suggestions)
+      .values({
+        id,
+        userId: c.var.user?.id ?? null,
+        actorKey,
+        content: parsed.data.content,
+        createdAt
+      })
+      .run();
+
+    return c.json(
+      {
+        item: {
+          id,
+          content: parsed.data.content,
+          email: c.var.user?.email ?? null,
+          actorKey,
+          createdAt
+        } satisfies SuggestionDto
+      },
+      201
+    );
+  });
+
   app.use("/api/admin/*", requireAdmin);
 
   app.get("/api/admin/users", (c) => {
@@ -669,7 +719,40 @@ export function createApp(options: AppOptions) {
         LIMIT 100
       `
       )
-      .all();
+      .all() as Array<{
+      id: string;
+      info_hash: string;
+      name: string | null;
+      email: string | null;
+      actor_key: string;
+      source: string;
+      status: string;
+      created_at: number;
+      size: number | null;
+    }>;
+
+    return c.json({
+      items: rows.map((row) => ({
+        ...row,
+        magnetLink: buildMagnetLink(row.info_hash, row.name ?? undefined)
+      }))
+    });
+  });
+
+  app.get("/api/admin/suggestions", (c) => {
+    const rows = sqlite
+      .prepare(
+        `
+        SELECT s.id, s.content, s.actor_key as actorKey, s.created_at as createdAt,
+               u.email as email
+        FROM suggestions s
+        LEFT JOIN users u ON u.id = s.user_id
+        ORDER BY s.created_at DESC
+        LIMIT 200
+      `
+      )
+      .all() as Array<SuggestionDto>;
+
     return c.json({ items: rows });
   });
 
@@ -926,15 +1009,6 @@ function getMagnetScore(db: AppDatabase, infoHash: string): number {
     .where(eq(magnetVotes.infoHash, infoHash))
     .all();
   return rows.reduce((sum, row) => sum + (Number(row.vote) || 0), 0);
-}
-
-function buildMagnetLink(infoHash: string, name?: string): string {
-  let link = `magnet:?xt=urn:btih:${infoHash}`;
-  const displayName = name?.trim();
-  if (displayName) {
-    link += `&dn=${encodeURIComponent(displayName)}`;
-  }
-  return link;
 }
 
 function maskInfoHash(infoHash: string): string {

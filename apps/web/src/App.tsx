@@ -8,6 +8,7 @@ import {
   Heart,
   History,
   LogOut,
+  MessageSquarePlus,
   Search,
   Shield,
   ThumbsDown,
@@ -19,13 +20,18 @@ import { startTransition, useDeferredValue, useEffect, useState } from "react";
 import type {
   LeaderboardItemDto,
   MagnetMetadataDto,
-  SafeUserDto
+  SafeUserDto,
+  SuggestionDto
 } from "../../../packages/shared/src";
+import { canonicalizeMagnetInput } from "../../../packages/shared/src";
 import { ApiError, api } from "./api";
 import { resolveMagnetFromBrowser } from "./whatslinkClient";
 
 const sampleMagnet =
   "magnet:?xt=urn:btih:7c1da06ef6898eaf9cabf879e44450417f5ae63f&dn=ROYD-327-C";
+
+const magnetPlaceholder =
+  "可贴完整磁力链接，或直接填入 Hash，如 709314680ed7fdec766e5d11441295d2e01a9251（会自动补全 magnet:?xt=urn:btih:）";
 
 type View = "search" | "library" | "admin";
 
@@ -38,6 +44,7 @@ export default function App() {
   const [source, setSource] = useState<"cache" | "upstream" | "client" | null>(
     null
   );
+  const [screenshotsEnabled, setScreenshotsEnabled] = useState(true);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [leaderboardTick, setLeaderboardTick] = useState(0);
@@ -46,12 +53,28 @@ export default function App() {
     api.session().then((session) => setUser(session.user)).catch(() => {
       setUser(null);
     });
+    api
+      .health()
+      .then((health) => setScreenshotsEnabled(health.settings.screenshotsEnabled))
+      .catch(() => undefined);
   }, []);
+
+  function normalizeMagnetField(value: string): string {
+    try {
+      return canonicalizeMagnetInput(value);
+    } catch {
+      return value.trim();
+    }
+  }
 
   async function resolveMagnet() {
     setBusy(true);
     setStatus("");
-    const targetMagnet = deferredMagnet || sampleMagnet;
+    const normalized = normalizeMagnetField(deferredMagnet || sampleMagnet);
+    if (normalized !== deferredMagnet) {
+      setMagnet(normalized);
+    }
+    const targetMagnet = normalized || sampleMagnet;
 
     async function applyClientFallback(): Promise<boolean> {
       try {
@@ -73,6 +96,7 @@ export default function App() {
 
     try {
       const response = await api.resolveMagnet(targetMagnet);
+      setScreenshotsEnabled(response.screenshotsEnabled);
       if (response.data.status === "error") {
         if (await applyClientFallback()) return;
       }
@@ -151,9 +175,11 @@ export default function App() {
           <SearchView
             magnet={magnet}
             setMagnet={setMagnet}
+            onMagnetBlur={() => setMagnet((value) => normalizeMagnetField(value))}
             busy={busy}
             status={status}
             source={source}
+            screenshotsEnabled={screenshotsEnabled}
             result={result}
             user={user}
             leaderboardTick={leaderboardTick}
@@ -172,9 +198,11 @@ export default function App() {
 function SearchView(props: {
   magnet: string;
   setMagnet: (value: string) => void;
+  onMagnetBlur: () => void;
   busy: boolean;
   status: string;
   source: "cache" | "upstream" | "client" | null;
+  screenshotsEnabled: boolean;
   result: MagnetMetadataDto | null;
   user: SafeUserDto | null;
   leaderboardTick: number;
@@ -187,12 +215,13 @@ function SearchView(props: {
       <div className="query-panel">
         <div className="section-title">
           <h1>先偷看一眼，再决定要不要下</h1>
-          <p>贴上磁力链接验一验牌面；游客可直接查询，登录后可保存历史与收藏。</p>
+          <p>贴上磁力链接或 Hash 验一验牌面；游客可直接查询，登录后可保存历史与收藏。</p>
         </div>
         <textarea
           value={props.magnet}
           onChange={(event) => props.setMagnet(event.target.value)}
-          placeholder="magnet:?xt=urn:btih:7c1da06ef6898eaf9cabf879e44450417f5ae63f&dn=ROYD-327-C"
+          onBlur={props.onMagnetBlur}
+          placeholder={magnetPlaceholder}
         />
         <div className="actions-row">
           <button className="primary-button" disabled={props.busy} onClick={props.onResolve}>
@@ -208,6 +237,7 @@ function SearchView(props: {
           <ResultPanel
             result={props.result}
             source={props.source}
+            screenshotsEnabled={props.screenshotsEnabled}
             user={props.user}
             onResultChange={props.onResultChange}
             onScoreChanged={props.onScoreChanged}
@@ -215,6 +245,7 @@ function SearchView(props: {
         ) : (
           <EmptyResult />
         )}
+        <SuggestionBox />
       </div>
 
       <aside className="summary-rail">
@@ -231,9 +262,59 @@ function SearchView(props: {
   );
 }
 
+function SuggestionBox() {
+  const [content, setContent] = useState("");
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    const trimmed = content.trim();
+    if (trimmed.length < 2) {
+      setStatus("请至少写两个字");
+      return;
+    }
+    setBusy(true);
+    setStatus("");
+    try {
+      await api.submitSuggestion(trimmed);
+      setContent("");
+      setStatus("感谢反馈，已提交给管理员");
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="suggestion-box">
+      <div className="suggestion-head">
+        <MessageSquarePlus size={18} />
+        <div>
+          <strong>产品建议</strong>
+          <span>有想法或吐槽都可以留在这里，管理后台可见。</span>
+        </div>
+      </div>
+      <textarea
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        placeholder="例如：希望支持批量验牌、想看更多预览帧…"
+        maxLength={2000}
+      />
+      <div className="actions-row">
+        <button className="secondary-button" disabled={busy} onClick={submit}>
+          提交建议
+        </button>
+        <span className="inline-status">{status}</span>
+      </div>
+    </div>
+  );
+}
+
 function ResultPanel(props: {
   result: MagnetMetadataDto;
   source: "cache" | "upstream" | "client" | null;
+  screenshotsEnabled: boolean;
   user: SafeUserDto | null;
   onResultChange: (value: MagnetMetadataDto | null) => void;
   onScoreChanged: () => void;
@@ -279,6 +360,10 @@ function ResultPanel(props: {
       setVoting(false);
     }
   }
+
+  const emptyPreviewText = props.screenshotsEnabled
+    ? "没有可展示的截图预览"
+    : "管理员已关闭预览";
 
   return (
     <article className="result-panel">
@@ -370,7 +455,7 @@ function ResultPanel(props: {
           </div>
         </div>
       ) : (
-        <div className="no-preview">没有可展示的截图预览，或管理员已关闭预览。</div>
+        <div className="no-preview">{emptyPreviewText}</div>
       )}
     </article>
   );
@@ -540,8 +625,17 @@ function AuthBox({ onSignedIn }: { onSignedIn: (user: SafeUserDto) => void }) {
 }
 
 function LibraryView({ user }: { user: SafeUserDto | null }) {
-  const [history, setHistory] = useState<Array<{ queriedAt: number; source: string; data: MagnetMetadataDto }>>([]);
-  const [favorites, setFavorites] = useState<Array<{ favoritedAt: number; data: MagnetMetadataDto }>>([]);
+  const [history, setHistory] = useState<
+    Array<{
+      queriedAt: number;
+      source: string;
+      magnetLink: string;
+      data: MagnetMetadataDto;
+    }>
+  >([]);
+  const [favorites, setFavorites] = useState<
+    Array<{ favoritedAt: number; data: MagnetMetadataDto }>
+  >([]);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -568,7 +662,8 @@ function LibraryView({ user }: { user: SafeUserDto | null }) {
           id: `${item.queriedAt}-${item.data.infoHash}`,
           title: item.data.name || item.data.infoHash,
           meta: `${formatDate(item.queriedAt)} · ${item.source} · ${formatScore(item.data.score)} 分`,
-          status: item.data.status
+          status: item.data.status,
+          magnetLink: item.magnetLink
         }))}
       />
       <ListPanel
@@ -595,8 +690,15 @@ function AdminView({ user }: { user: SafeUserDto | null }) {
     userRateLimitPerHour: 120
   });
   const [users, setUsers] = useState<SafeUserDto[]>([]);
-  const [queries, setQueries] = useState<Array<Record<string, unknown>>>([]);
-  const [health, setHealth] = useState<{ ok: boolean; latencyMs: number; error?: string } | null>(null);
+  const [queries, setQueries] = useState<
+    Array<Record<string, unknown> & { magnetLink?: string }>
+  >([]);
+  const [suggestions, setSuggestions] = useState<SuggestionDto[]>([]);
+  const [health, setHealth] = useState<{
+    ok: boolean;
+    latencyMs: number;
+    error?: string;
+  } | null>(null);
 
   useEffect(() => {
     if (user?.role !== "admin") return;
@@ -604,14 +706,26 @@ function AdminView({ user }: { user: SafeUserDto | null }) {
       api.adminStats(),
       api.adminUsers(),
       api.adminQueries(),
+      api.adminSuggestions(),
       api.adminHealth()
-    ]).then(([statsResponse, usersResponse, queriesResponse, healthResponse]) => {
-      setStats(statsResponse.stats);
-      setSettings(statsResponse.settings);
-      setUsers(usersResponse.items);
-      setQueries(queriesResponse.items);
-      setHealth(healthResponse.whatslink);
-    }).catch(() => undefined);
+    ])
+      .then(
+        ([
+          statsResponse,
+          usersResponse,
+          queriesResponse,
+          suggestionsResponse,
+          healthResponse
+        ]) => {
+          setStats(statsResponse.stats);
+          setSettings(statsResponse.settings);
+          setUsers(usersResponse.items);
+          setQueries(queriesResponse.items);
+          setSuggestions(suggestionsResponse.items);
+          setHealth(healthResponse.whatslink);
+        }
+      )
+      .catch(() => undefined);
   }, [user]);
 
   async function updateScreenshots(enabled: boolean) {
@@ -662,7 +776,20 @@ function AdminView({ user }: { user: SafeUserDto | null }) {
           id: String(item.id),
           title: String(item.name || item.info_hash || item.infoHash || "-"),
           meta: `${String(item.email || item.actor_key || item.actorKey || "-")} · ${String(item.source || "-")}`,
-          status: String(item.status || "-")
+          status: String(item.status || "-"),
+          magnetLink:
+            typeof item.magnetLink === "string" ? item.magnetLink : undefined
+        }))}
+      />
+      <ListPanel
+        title="用户建议"
+        icon={<MessageSquarePlus size={18} />}
+        empty="暂无建议"
+        items={suggestions.map((item) => ({
+          id: item.id,
+          title: item.content,
+          meta: `${item.email || item.actorKey} · ${formatDate(item.createdAt)}`,
+          status: "suggestion"
         }))}
       />
     </section>
@@ -673,11 +800,34 @@ function ListPanel(props: {
   title: string;
   icon?: React.ReactNode;
   empty: string;
-  items: Array<{ id: string; title: string; meta: string; status: string }>;
+  items: Array<{
+    id: string;
+    title: string;
+    meta: string;
+    status: string;
+    magnetLink?: string;
+  }>;
 }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  async function copyMagnet(id: string, magnetLink: string) {
+    try {
+      await navigator.clipboard.writeText(magnetLink);
+      setCopiedId(id);
+      window.setTimeout(() => {
+        setCopiedId((current) => (current === id ? null : current));
+      }, 1600);
+    } catch {
+      // ignore
+    }
+  }
+
   return (
     <section className="list-panel">
-      <h2>{props.icon}{props.title}</h2>
+      <h2>
+        {props.icon}
+        {props.title}
+      </h2>
       {props.items.length === 0 ? (
         <p className="empty-text">{props.empty}</p>
       ) : (
@@ -687,6 +837,22 @@ function ListPanel(props: {
               <div>
                 <strong>{item.title}</strong>
                 <span>{item.meta}</span>
+                {item.magnetLink ? (
+                  <div className="leaderboard-link-row">
+                    <code className="leaderboard-link" title={item.magnetLink}>
+                      {item.magnetLink}
+                    </code>
+                    <button
+                      className="link-button copy-link-button"
+                      type="button"
+                      onClick={() => copyMagnet(item.id, item.magnetLink!)}
+                      title="复制完整磁力链接"
+                    >
+                      <Copy size={14} />
+                      {copiedId === item.id ? "已复制" : "复制"}
+                    </button>
+                  </div>
+                ) : null}
               </div>
               <span className={`status-dot ${item.status}`}>{item.status}</span>
             </div>

@@ -6,6 +6,7 @@ export type ParsedMagnetLink = {
 const HEX_HASH_RE = /^[a-f0-9]{40}$/i;
 const BASE32_HASH_RE = /^[a-z2-7]{32}$/i;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const BARE_HASH_RE = /^[a-f0-9]{40}$|^[a-z2-7]{32}$/i;
 
 export function normalizeInfoHash(value: string): string {
   const candidate = value.trim();
@@ -20,10 +21,26 @@ export function normalizeInfoHash(value: string): string {
   throw new Error("HASH_INVALID");
 }
 
+export function buildMagnetLink(infoHash: string, name?: string): string {
+  let link = `magnet:?xt=urn:btih:${infoHash}`;
+  const displayName = name?.trim();
+  if (displayName) {
+    link += `&dn=${encodeURIComponent(displayName)}`;
+  }
+  return link;
+}
+
+/** Accept full magnet URI or bare info-hash (hex 40 / base32 32). */
 export function parseMagnetLink(value: string): ParsedMagnetLink {
+  const trimmed = value.trim();
+
+  if (BARE_HASH_RE.test(trimmed)) {
+    return { infoHash: normalizeInfoHash(trimmed) };
+  }
+
   let url: URL;
   try {
-    url = new URL(value.trim());
+    url = new URL(trimmed);
   } catch {
     throw new Error("MAGNET_INVALID");
   }
@@ -47,6 +64,17 @@ export function parseMagnetLink(value: string): ParsedMagnetLink {
     infoHash: normalizeInfoHash(hashPart),
     displayName
   };
+}
+
+/** Normalize user input into a canonical magnet URI when possible. */
+export function canonicalizeMagnetInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (BARE_HASH_RE.test(trimmed)) {
+    return buildMagnetLink(normalizeInfoHash(trimmed));
+  }
+  const parsed = parseMagnetLink(trimmed);
+  return buildMagnetLink(parsed.infoHash, parsed.displayName);
 }
 
 function base32ToHex(value: string): string {
